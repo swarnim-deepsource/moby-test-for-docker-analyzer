@@ -57,6 +57,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
                 ;; \
            esac
 
+
 FROM base AS swagger
 WORKDIR $GOPATH/src/github.com/go-swagger/go-swagger
 
