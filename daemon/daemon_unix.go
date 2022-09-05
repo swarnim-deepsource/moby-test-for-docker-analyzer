@@ -707,8 +707,8 @@ func verifyPlatformContainerSettings(daemon *Daemon, hostConfig *containertypes.
 		hostConfig.Runtime = daemon.configStore.GetDefaultRuntimeName()
 	}
 
-	if rt := daemon.configStore.GetRuntime(hostConfig.Runtime); rt == nil {
-		return warnings, fmt.Errorf("Unknown runtime specified %s", hostConfig.Runtime)
+	if _, err := daemon.getRuntime(hostConfig.Runtime); err != nil {
+		return warnings, err
 	}
 
 	parser := volumemounts.NewParser()
@@ -764,7 +764,9 @@ func verifyDaemonSettings(conf *config.Config) error {
 	configureRuntimes(conf)
 	if rtName := conf.GetDefaultRuntimeName(); rtName != "" {
 		if conf.GetRuntime(rtName) == nil {
-			return fmt.Errorf("specified default runtime '%s' does not exist", rtName)
+			if !config.IsPermissibleC8dRuntimeName(rtName) {
+				return fmt.Errorf("specified default runtime '%s' does not exist", rtName)
+			}
 		}
 	}
 	return nil
@@ -820,7 +822,7 @@ func configureKernelSecuritySupport(config *config.Config, driverName string) er
 			return nil
 		}
 
-		if driverName == "overlay" || driverName == "overlay2" {
+		if driverName == "overlay" || driverName == "overlay2" || driverName == "overlayfs" {
 			// If driver is overlay or overlay2, make sure kernel
 			// supports selinux with overlay.
 			supported, err := overlaySupportsSelinux()
@@ -1077,15 +1079,16 @@ func setupInitLayer(idMapping idtools.IdentityMapping) func(containerfs.Containe
 }
 
 // Parse the remapped root (user namespace) option, which can be one of:
-//   username            - valid username from /etc/passwd
-//   username:groupname  - valid username; valid groupname from /etc/group
-//   uid                 - 32-bit unsigned int valid Linux UID value
-//   uid:gid             - uid value; 32-bit unsigned int Linux GID value
 //
-//  If no groupname is specified, and a username is specified, an attempt
-//  will be made to lookup a gid for that username as a groupname
+// - username            - valid username from /etc/passwd
+// - username:groupname  - valid username; valid groupname from /etc/group
+// - uid                 - 32-bit unsigned int valid Linux UID value
+// - uid:gid             - uid value; 32-bit unsigned int Linux GID value
 //
-//  If names are used, they are verified to exist in passwd/group
+// If no groupname is specified, and a username is specified, an attempt
+// will be made to lookup a gid for that username as a groupname
+//
+// If names are used, they are verified to exist in passwd/group
 func parseRemappedRoot(usergrp string) (string, string, error) {
 
 	var (
@@ -1384,10 +1387,13 @@ func copyBlkioEntry(entries []*statsV1.BlkIOEntry) []types.BlkioStatEntry {
 }
 
 func (daemon *Daemon) stats(c *container.Container) (*types.StatsJSON, error) {
-	if !c.IsRunning() {
-		return nil, errNotRunning(c.ID)
+	c.Lock()
+	task, err := c.GetRunningTask()
+	c.Unlock()
+	if err != nil {
+		return nil, err
 	}
-	cs, err := daemon.containerd.Stats(context.Background(), c.ID)
+	cs, err := task.Stats(context.Background())
 	if err != nil {
 		if strings.Contains(err.Error(), "container not found") {
 			return nil, containerNotFound(c.ID)

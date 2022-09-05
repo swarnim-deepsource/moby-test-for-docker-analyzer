@@ -240,6 +240,9 @@ func DefaultProfile() *Seccomp {
 					"pidfd_send_signal",
 					"pipe",
 					"pipe2",
+					"pkey_alloc",
+					"pkey_free",
+					"pkey_mprotect",
 					"poll",
 					"ppoll",
 					"ppoll_time64",
@@ -731,6 +734,7 @@ func DefaultProfile() *Seccomp {
 					"settimeofday",
 					"stime",
 					"clock_settime",
+					"clock_settime64",
 				},
 				Action: specs.ActAllow,
 			},
@@ -771,6 +775,28 @@ func DefaultProfile() *Seccomp {
 			},
 			Includes: &Filter{
 				Caps: []string{"CAP_SYSLOG"},
+			},
+		},
+		{
+			LinuxSyscall: specs.LinuxSyscall{
+				Names: []string{
+					"bpf",
+				},
+				Action: specs.ActAllow,
+			},
+			Includes: &Filter{
+				Caps: []string{"CAP_BPF"},
+			},
+		},
+		{
+			LinuxSyscall: specs.LinuxSyscall{
+				Names: []string{
+					"perf_event_open",
+				},
+				Action: specs.ActAllow,
+			},
+			Includes: &Filter{
+				Caps: []string{"CAP_PERFMON"},
 			},
 		},
 	}

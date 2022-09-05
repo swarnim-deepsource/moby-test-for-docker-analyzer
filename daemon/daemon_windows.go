@@ -14,6 +14,7 @@ import (
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/daemon/config"
+	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/libcontainerd/local"
 	"github.com/docker/docker/libcontainerd/remote"
 	"github.com/docker/docker/libnetwork"
@@ -264,6 +265,35 @@ func (daemon *Daemon) initNetworkController(activeSandboxes map[string]interface
 		}
 
 		if !found {
+			// non-default nat networks should be re-created if missing from HNS
+			if v.Type() == "nat" && v.Name() != "nat" {
+				_, _, v4Conf, v6Conf := v.Info().IpamConfig()
+				netOption := map[string]string{}
+				for k, v := range v.Info().DriverOptions() {
+					if k != winlibnetwork.NetworkName && k != winlibnetwork.HNSID {
+						netOption[k] = v
+					}
+				}
+				name := v.Name()
+				id := v.ID()
+
+				err = v.Delete()
+				if err != nil {
+					logrus.Errorf("Error occurred when removing network %v", err)
+				}
+
+				_, err := daemon.netController.NewNetwork("nat", name, id,
+					libnetwork.NetworkOptionGeneric(options.Generic{
+						netlabel.GenericData: netOption,
+					}),
+					libnetwork.NetworkOptionIpam("default", "", v4Conf, v6Conf, nil),
+				)
+				if err != nil {
+					logrus.Errorf("Error occurred when creating network %v", err)
+				}
+				continue
+			}
+
 			// global networks should not be deleted by local HNS
 			if v.Info().Scope() != datastore.GlobalScope {
 				err = v.Delete()
@@ -486,14 +516,17 @@ func driverOptions(_ *config.Config) nwconfig.Option {
 }
 
 func (daemon *Daemon) stats(c *container.Container) (*types.StatsJSON, error) {
-	if !c.IsRunning() {
-		return nil, errNotRunning(c.ID)
+	c.Lock()
+	task, err := c.GetRunningTask()
+	c.Unlock()
+	if err != nil {
+		return nil, err
 	}
 
 	// Obtain the stats from HCS via libcontainerd
-	stats, err := daemon.containerd.Stats(context.Background(), c.ID)
+	stats, err := task.Stats(context.Background())
 	if err != nil {
-		if strings.Contains(err.Error(), "container not found") {
+		if errdefs.IsNotFound(err) {
 			return nil, containerNotFound(c.ID)
 		}
 		return nil, err

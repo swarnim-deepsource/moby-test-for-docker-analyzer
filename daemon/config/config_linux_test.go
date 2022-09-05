@@ -6,6 +6,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/opts"
 	units "github.com/docker/go-units"
+	"github.com/imdario/mergo"
 	"github.com/spf13/pflag"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
@@ -63,33 +64,26 @@ func TestDaemonConfigurationMerge(t *testing.T) {
 					"Hard": 2048,
 					"Soft": 1024
 				}
-			},
-			"log-opts": {
-				"tag": "test_tag"
 			}
 		}`
 
 	file := fs.NewFile(t, "docker-config", fs.WithContent(configFileData))
 	defer file.Remove()
 
-	c := &Config{
-		CommonConfig: CommonConfig{
-			AutoRestart: true,
-			LogConfig: LogConfig{
-				Type:   "syslog",
-				Config: map[string]string{"tag": "test"},
-			},
-		},
-	}
+	conf, err := New()
+	assert.NilError(t, err)
 
 	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	flags.BoolVarP(&conf.Debug, "debug", "D", false, "")
+	flags.BoolVarP(&conf.AutoRestart, "restart", "r", true, "")
+	flags.Var(opts.NewNamedUlimitOpt("default-ulimits", &conf.Ulimits), "default-ulimit", "")
+	flags.StringVar(&conf.LogConfig.Type, "log-driver", "json-file", "")
+	flags.Var(opts.NewNamedMapOpts("log-opts", conf.LogConfig.Config, nil), "log-opt", "")
+	assert.Check(t, flags.Set("restart", "true"))
+	assert.Check(t, flags.Set("log-driver", "syslog"))
+	assert.Check(t, flags.Set("log-opt", "tag=from_flag"))
 
-	var debug bool
-	flags.BoolVarP(&debug, "debug", "D", false, "")
-	flags.Var(opts.NewNamedUlimitOpt("default-ulimits", nil), "default-ulimit", "")
-	flags.Var(opts.NewNamedMapOpts("log-opts", nil, nil), "log-opt", "")
-
-	cc, err := MergeDaemonConfigurations(c, flags, file.Path())
+	cc, err := MergeDaemonConfigurations(conf, flags, file.Path())
 	assert.NilError(t, err)
 
 	assert.Check(t, cc.Debug)
@@ -97,7 +91,7 @@ func TestDaemonConfigurationMerge(t *testing.T) {
 
 	expectedLogConfig := LogConfig{
 		Type:   "syslog",
-		Config: map[string]string{"tag": "test_tag"},
+		Config: map[string]string{"tag": "from_flag"},
 	}
 
 	assert.Check(t, is.DeepEqual(expectedLogConfig, cc.LogConfig))
@@ -119,7 +113,8 @@ func TestDaemonConfigurationMergeShmSize(t *testing.T) {
 	file := fs.NewFile(t, "docker-config", fs.WithContent(data))
 	defer file.Remove()
 
-	c := &Config{}
+	c, err := New()
+	assert.NilError(t, err)
 
 	flags := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	shmSize := opts.MemBytes(DefaultShmSize)
@@ -134,33 +129,29 @@ func TestDaemonConfigurationMergeShmSize(t *testing.T) {
 
 func TestUnixValidateConfigurationErrors(t *testing.T) {
 	testCases := []struct {
-		config *Config
+		doc         string
+		config      *Config
+		expectedErr string
 	}{
-		// Can't override the stock runtime
 		{
+			doc: `cannot override the stock runtime`,
 			config: &Config{
 				Runtimes: map[string]types.Runtime{
 					StockRuntimeName: {},
 				},
 			},
-		},
-		// Default runtime should be present in runtimes
-		{
-			config: &Config{
-				Runtimes: map[string]types.Runtime{
-					"foo": {},
-				},
-				CommonConfig: CommonConfig{
-					DefaultRuntime: "bar",
-				},
-			},
+			expectedErr: `runtime name 'runc' is reserved`,
 		},
 	}
 	for _, tc := range testCases {
-		err := Validate(tc.config)
-		if err == nil {
-			t.Fatalf("expected error, got nil for config %v", tc.config)
-		}
+		tc := tc
+		t.Run(tc.doc, func(t *testing.T) {
+			cfg, err := New()
+			assert.NilError(t, err)
+			assert.Check(t, mergo.Merge(cfg, tc.config, mergo.WithOverride))
+			err = Validate(cfg)
+			assert.ErrorContains(t, err, tc.expectedErr)
+		})
 	}
 }
 
@@ -194,9 +185,6 @@ func TestUnixGetInitPath(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		initPath := tc.config.GetInitPath()
-		if initPath != tc.expectedInitPath {
-			t.Fatalf("expected initPath to be %v, got %v", tc.expectedInitPath, initPath)
-		}
+		assert.Equal(t, tc.config.GetInitPath(), tc.expectedInitPath)
 	}
 }

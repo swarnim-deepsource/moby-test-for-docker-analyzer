@@ -116,7 +116,10 @@ func (daemon *Daemon) rewriteRuntimePath(name, p string, args []string) (string,
 func (daemon *Daemon) getRuntime(name string) (*types.Runtime, error) {
 	rt := daemon.configStore.GetRuntime(name)
 	if rt == nil {
-		return nil, errdefs.InvalidParameter(errors.Errorf("runtime not found in config: %s", name))
+		if !config.IsPermissibleC8dRuntimeName(name) {
+			return nil, errdefs.InvalidParameter(errors.Errorf("unknown or invalid runtime name: %s", name))
+		}
+		return &types.Runtime{Shim: &types.ShimConfig{Binary: name}}, nil
 	}
 
 	if len(rt.Args) > 0 {
